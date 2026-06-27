@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `SECURITY.md` with vulnerability disclosure policy, response SLA (72 h), in-scope/out-of-scope definitions, and coordinated disclosure timeline
+- `CONTRIBUTING.md`: "Reporting vulnerabilities" section linking to `SECURITY.md`
+- `README.md`: Security section directing reporters to GitHub Security Advisories
+
 ## [0.1.0] - 2026-06-24
 
 ### Added
