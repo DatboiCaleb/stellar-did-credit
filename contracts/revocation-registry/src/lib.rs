@@ -3,7 +3,8 @@
 //!
 //! Maintains an on-chain list of revoked verifiable credential hashes.
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, symbol_short, Address, BytesN, Env, Vec,
+    contract, contractimpl, contracttype, contracterror, symbol_short, Address, BytesN, Env,
+    Vec,
 };
 
 /// Error types for the revocation registry contract.
@@ -15,6 +16,8 @@ pub enum RevocationRegistryError {
     AlreadyInitialized = 1,
     /// Caller is not authorized to perform this action.
     NotAuthorized = 2,
+    /// No pending admin proposal exists.
+    NoPendingAdmin = 3,
 }
 
 /// Storage keys for revocation registry contract.
@@ -23,8 +26,11 @@ pub enum RevocationRegistryError {
 pub enum RevocationKey {
     /// Contract administrator address.
     Admin,
+    /// Pending contract admin address for two-step transfer.
+    PendingAdmin,
+
     /// Revocation status for a VC hash.
-    Status(BytesN<32>),    // vc_hash → bool
+    Status(BytesN<32>), // vc_hash → bool
     /// Address of issuer who revoked the VC.
     IssuerOfVC(BytesN<32>), // vc_hash → Address (who revoked)
 }
@@ -42,6 +48,49 @@ impl RevocationRegistry {
         }
         admin.require_auth();
         env.storage().instance().set(&RevocationKey::Admin, &admin);
+        Ok(())
+    }
+
+    /// Propose a new contract admin (two-step admin transfer).
+    pub fn propose_new_admin(
+        env: Env,
+        current_admin: Address,
+        new_admin: Address,
+    ) -> Result<(), RevocationRegistryError> {
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&RevocationKey::Admin)
+            .expect("not initialized");
+        if current_admin != stored_admin {
+            return Err(RevocationRegistryError::NotAuthorized);
+        }
+        current_admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&RevocationKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// Accept a proposed admin role (two-step admin transfer).
+    ///
+    /// Panics if the caller address was not proposed as the next admin.
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), RevocationRegistryError> {
+        let pending: Option<Address> = env.storage().instance().get(&RevocationKey::PendingAdmin);
+        match pending {
+            Some(p) => {
+                if p != new_admin {
+                    panic!("not authorized");
+                }
+            }
+            None => return Err(RevocationRegistryError::NoPendingAdmin),
+        }
+
+        new_admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&RevocationKey::Admin, &new_admin);
+        env.storage().instance().remove(&RevocationKey::PendingAdmin);
         Ok(())
     }
 
@@ -68,7 +117,11 @@ impl RevocationRegistry {
     }
 
     /// Revoke multiple verifiable credentials in a single batch operation.
-    pub fn batch_revoke(env: Env, issuer: Address, vc_hashes: Vec<BytesN<32>>) -> Result<(), RevocationRegistryError> {
+    pub fn batch_revoke(
+        env: Env,
+        issuer: Address,
+        vc_hashes: Vec<BytesN<32>>,
+    ) -> Result<(), RevocationRegistryError> {
         issuer.require_auth();
         for vc_hash in vc_hashes.iter() {
             env.storage()
@@ -85,7 +138,11 @@ impl RevocationRegistry {
 
     /// Upgrade the contract WASM in-place, preserving address and all stored state
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
-        let stored_admin: Address = env.storage().instance().get(&RevocationKey::Admin).expect("not initialized");
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&RevocationKey::Admin)
+            .expect("not initialized");
         if admin != stored_admin {
             panic!("not authorized");
         }
@@ -143,6 +200,7 @@ mod tests {
         let contract_id2 = env2.register_contract(None, RevocationRegistry);
         let client2 = RevocationRegistryClient::new(&env2, &contract_id2);
         let _ = client2.revoke(&issuer, &vc_hash);
+        let _ = client;
     }
 
     #[test]
@@ -168,6 +226,48 @@ mod tests {
     }
 
     #[test]
+    fn test_admin_transfer_two_step() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevocationRegistry);
+        let client = RevocationRegistryClient::new(&env, &contract_id);
+
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+
+        client.initialize(&admin1);
+        client.propose_new_admin(&admin1, &admin2);
+        client.accept_admin(&admin2);
+
+        // new admin can upgrade
+        client.upgrade(&admin2, &BytesN::from_array(&env, &[0u8; 32]));
+
+        // old admin cannot upgrade
+        let res = std::panic::catch_unwind(|| {
+            client.upgrade(&admin1, &BytesN::from_array(&env, &[1u8; 32]));
+        });
+        assert!(res.is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "not authorized")]
+    fn test_non_pending_admin_cannot_accept() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, RevocationRegistry);
+        let client = RevocationRegistryClient::new(&env, &contract_id);
+
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+
+        client.initialize(&admin1);
+        client.propose_new_admin(&admin1, &admin2);
+
+        let _ = client.accept_admin(&non_admin);
+    }
+
+    #[test]
     #[should_panic(expected = "not authorized")]
     fn test_upgrade_rejects_non_admin() {
         let env = Env::default();
@@ -181,3 +281,4 @@ mod tests {
         client.upgrade(&non_admin, &BytesN::from_array(&env, &[0u8; 32]));
     }
 }
+

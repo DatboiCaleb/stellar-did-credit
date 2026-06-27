@@ -18,13 +18,19 @@ pub enum CreditOracleError {
     LenderNotRegistered = 4,
     /// Proposed weights do not sum to 100.
     InvalidWeights = 5,
+    /// No pending admin proposal exists.
+    NoPendingAdmin = 6,
 }
+
 
 /// Storage keys for the credit oracle contract
 #[contracttype]
 pub enum DataKey {
     /// Contract administrator address
     Admin,
+    /// Pending contract admin address for two-step transfer
+    PendingAdmin,
+
     /// Global configuration
     Config,
     /// Trusted feeder address authorized to update transaction stats
@@ -323,6 +329,34 @@ impl CreditOracle {
         env.storage().instance().get(&DataKey::PendingWeights)
     }
 
+    /// Propose a new contract admin (two-step admin transfer).
+    pub fn propose_new_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), CreditOracleError> {
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
+        if current_admin != stored_admin {
+            return Err(CreditOracleError::NotAuthorized);
+        }
+        current_admin.require_auth();
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// Accept a proposed admin role (two-step admin transfer).
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), CreditOracleError> {
+        let pending: Option<Address> = env.storage().instance().get(&DataKey::PendingAdmin);
+        match pending {
+            Some(p) => {
+                if p != new_admin {
+                    panic!("not authorized");
+                }
+            }
+            None => return Err(CreditOracleError::NoPendingAdmin),
+        }
+        new_admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Ok(())
+    }
+
     /// Upgrade the contract WASM in-place, preserving address and all stored state.
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
@@ -333,6 +367,7 @@ impl CreditOracle {
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -631,5 +666,49 @@ mod tests {
         client.initialize(&admin);
         client.upgrade(&non_admin, &BytesN::from_array(&env, &[0u8; 32]));
     }
+
+    #[test]
+    fn test_admin_transfer_two_step() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, CreditOracle);
+        let client = CreditOracleClient::new(&env, &contract_id);
+
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let feeder = Address::generate(&env);
+
+        client.initialize(&admin1);
+
+        client.propose_new_admin(&admin1, &admin2);
+        client.accept_admin(&admin2);
+
+        // new admin can register feeder
+        client.register_feeder(&admin2, &feeder);
+
+        // old admin cannot register feeder
+        let feeder2 = Address::generate(&env);
+        let res = client.try_register_feeder(&admin1, &feeder2);
+        assert_eq!(res, Err(Ok(CreditOracleError::NotAuthorized)));
+    }
+
+    #[test]
+    #[should_panic(expected = "not authorized")]
+    fn test_non_pending_admin_cannot_accept() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, CreditOracle);
+        let client = CreditOracleClient::new(&env, &contract_id);
+
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+
+        client.initialize(&admin1);
+        client.propose_new_admin(&admin1, &admin2);
+
+        let _ = client.accept_admin(&non_admin);
+    }
 }
+
 

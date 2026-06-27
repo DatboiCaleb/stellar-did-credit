@@ -1,15 +1,24 @@
-# TODO - Active VC count fix
+# TODO - Admin transfer (two-step) for contracts
 
-- [ ] Update `contracts/identity-oracle/src/lib.rs`
-  - [ ] Rename `get_vc_count` to `get_total_vc_count` (and add backward-compatible wrapper if needed)
-  - [ ] Add `get_active_vc_count(env: Env, subject: Address) -> u32`
-  - [ ] Add unit test `test_get_active_vc_count_excludes_revoked`
+- [ ] Update identity-oracle/src/lib.rs
+  - [ ] Add PendingAdmin to storage
+  - [ ] Add propose_new_admin(current_admin, new_admin)
+  - [ ] Add accept_admin(new_admin)
+  - [ ] Add tests: admin transfer two-step + non-pending cannot accept
 
-- [ ] Update documentation to reference `get_active_vc_count`
-  - [ ] `docs/architecture.md`
-  - [ ] Confirm/adjust `docs/scoring-spec.md` if it mentions vc_count semantics
+- [ ] Update credit-oracle/src/lib.rs
+  - [ ] Add PendingAdmin to storage
+  - [ ] Add propose_new_admin(current_admin, new_admin)
+  - [ ] Add accept_admin(new_admin)
+  - [ ] Ensure admin-gated functions use current Admin address only (already done)
+  - [ ] Add tests: admin transfer two-step + non-pending cannot accept
 
-- [ ] Update any other repo references to `get_vc_count` (if found)
-- [ ] Run test suite
-  - [ ] `cargo test -p identity-oracle`
-  - [ ] `cargo test -p contracts` (or workspace tests)
+- [ ] Update revocation-registry/src/lib.rs
+  - [ ] Add PendingAdmin to storage
+  - [ ] Add propose_new_admin(current_admin, new_admin)
+  - [ ] Add accept_admin(new_admin)
+  - [ ] Add tests: admin transfer two-step + non-pending cannot accept
+
+- [ ] Ensure generated client bindings compile with new methods (via soroban SDK macros)
+- [ ] Run cargo test for all contracts/tests
+

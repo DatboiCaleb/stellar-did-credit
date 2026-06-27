@@ -13,13 +13,18 @@ pub enum IdentityOracleError {
     IssuerNotRegistered = 3,
     /// The provided CID is invalid.
     InvalidCID = 4,
+    /// No pending admin proposal exists.
+    NoPendingAdmin = 5,
 }
 
-/// Storage key variants for the identity-oracle contract.
+
+    /// Storage key variants for the identity-oracle contract.
 #[contracttype]
 pub enum DataKey {
     /// The contract administrator address.
     Admin,
+    /// Pending contract admin address for two-step transfer.
+    PendingAdmin,
     /// Whether the given address is a trusted credential issuer.
     TrustedIssuer(Address),
     /// The DID document hash anchored for the given subject address.
@@ -27,6 +32,7 @@ pub enum DataKey {
     /// The list of VC anchors associated with the given subject address.
     VCAnchors(Address),
 }
+
 
 /// An on-chain anchor record for a verifiable credential.
 #[contracttype]
@@ -258,6 +264,34 @@ impl IdentityOracle {
         false
     }
 
+    /// Propose a new contract admin (two-step admin transfer).
+    pub fn propose_new_admin(env: Env, current_admin: Address, new_admin: Address) -> Result<(), IdentityOracleError> {
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
+        if current_admin != stored_admin {
+            return Err(IdentityOracleError::NotAuthorized);
+        }
+        current_admin.require_auth();
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// Accept a proposed admin role (two-step admin transfer).
+    pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), IdentityOracleError> {
+        let pending: Option<Address> = env.storage().instance().get(&DataKey::PendingAdmin);
+        match pending {
+            Some(p) => {
+                if p != new_admin {
+                    panic!("not authorized");
+                }
+            }
+            None => return Err(IdentityOracleError::NoPendingAdmin),
+        }
+        new_admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        Ok(())
+    }
+
     /// Upgrade the contract WASM in-place, preserving address and all stored state
     pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("not initialized");
@@ -268,6 +302,7 @@ impl IdentityOracle {
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -553,4 +588,52 @@ mod tests {
         });
         assert_eq!(stored, admin);
     }
+
+    #[test]
+    fn test_admin_transfer_two_step() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, IdentityOracle);
+        let client = IdentityOracleClient::new(&env, &contract_id);
+
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let issuer = Address::generate(&env);
+
+        client.initialize(&admin1);
+
+        // propose new admin
+        client.propose_new_admin(&admin1, &admin2);
+
+        // accept by proposed admin
+        client.accept_admin(&admin2);
+
+        // new admin can register issuer
+        client.register_issuer(&admin2, &issuer);
+
+        // old admin cannot register issuer
+        let issuer2 = Address::generate(&env);
+        let res = client.try_register_issuer(&admin1, &issuer2);
+        assert_eq!(res, Err(Ok(IdentityOracleError::NotAuthorized)));
+    }
+
+    #[test]
+    #[should_panic(expected = "not authorized")]
+    fn test_non_pending_admin_cannot_accept() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, IdentityOracle);
+        let client = IdentityOracleClient::new(&env, &contract_id);
+
+        let admin1 = Address::generate(&env);
+        let admin2 = Address::generate(&env);
+        let non_admin = Address::generate(&env);
+
+        client.initialize(&admin1);
+        client.propose_new_admin(&admin1, &admin2);
+
+        // non_admin tries to accept
+        let _ = client.accept_admin(&non_admin);
+    }
 }
+
