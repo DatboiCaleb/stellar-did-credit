@@ -2,6 +2,8 @@
 
 ## ⚠️ Never commit secrets
 
+> A pre-commit hook (via [lefthook](https://github.com/evilmartians/lefthook)) is installed automatically by `pnpm install`. It will block any commit containing a Stellar secret key pattern before it reaches GitHub.
+
 **Stellar secret keys start with `S` and are 56 characters long.** Never commit them.
 
 Common ways contributors accidentally expose secrets:
