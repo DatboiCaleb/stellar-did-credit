@@ -71,6 +71,8 @@ pub enum DataKey {
     Score(Address),
     /// Cached VC count for a user
     VcCount(Address),
+    /// Optional identity-oracle contract ID for cross-contract VC count lookup
+    IdentityOracleId(Address),
     /// Pending weights awaiting timelock
     PendingWeights,
     /// Ledger number when pending weights become effective
@@ -244,6 +246,8 @@ impl CreditOracle {
     }
 
     /// Cache VC count for a subject (feeder-only)
+    /// Deprecated: prefer configuring an `IdentityOracleId` and using the
+    /// cross-contract lookup via `set_identity_oracle` + `compute_score`.
     pub fn set_vc_count(env: Env, feeder: Address, subject: Address, count: u32) -> Result<(), CreditOracleError> {
         feeder.require_auth();
         if !env.storage().persistent().has(&DataKey::TrustedFeeder(feeder.clone())) {
@@ -286,9 +290,15 @@ impl CreditOracle {
             .get(&DataKey::RepaymentRecord(subject.clone()))
             .unwrap_or(RepaymentRecord { on_time_count: 0, total_count: 0 });
 
-        let vc_count: u32 = env.storage().persistent()
-            .get(&DataKey::VcCount(subject.clone()))
-            .unwrap_or(0u32);
+        // Prefer live lookup from identity-oracle when configured; fall back
+        // to the cached `VcCount` for backward compatibility.
+        let vc_count: u32 = if let Some(identity_id) = env.storage().instance().get(&DataKey::IdentityOracleId) {
+            env.invoke_contract(&identity_id, &symbol_short!("get_vc_count"), (subject.clone(),))
+        } else {
+            env.storage().persistent()
+                .get(&DataKey::VcCount(subject.clone()))
+                .unwrap_or(0u32)
+        };
 
         // saturating_mul prevents overflow when vc_count is very large (e.g. u32::MAX).
         // The subsequent .min(100) clamp preserves the original scoring cap.
