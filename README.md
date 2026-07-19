@@ -453,14 +453,6 @@ Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and 
 5. Write your code with tests — `cargo test --workspace` must pass
 6. Push to your fork and open a pull request — make sure the base repository is set to **`cybermax4200/stellar-did-credit`**, not your own fork
 
-### Issue complexity levels
-
-| Label     | Points  | Typical scope                                               |
-| --------- | ------- | ----------------------------------------------------------- |
-| `trivial` | 100 pts | Single function, clear spec, minimal context needed         |
-| `medium`  | 150 pts | Multiple functions or cross-package work                    |
-| `high`    | 200 pts | New contract feature, ZK work, or architecture-level change |
-
 ### Development requirements
 
 - `cargo clippy --workspace -- -D warnings` must pass with zero warnings
