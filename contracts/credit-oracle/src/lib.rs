@@ -655,12 +655,21 @@ impl CreditOracle {
     }
 
     /// Update weights directly (admin/governance only).
+    ///
+    /// Bypasses the propose/timelock flow. Also clears any pending timelocked
+    /// proposal, since otherwise a later `apply_weights()` call would silently
+    /// overwrite this direct update once the original proposal's timelock
+    /// elapses.
     pub fn update_weights(env: Env, weights: ScoringWeights) -> Result<(), CreditOracleError> {
         if weights.vc_weight + weights.tx_weight + weights.repayment_weight != 100 {
             return Err(CreditOracleError::InvalidWeights);
         }
         require_admin(&env);
         env.storage().instance().set(&DataKey::Config, &weights);
+        env.storage().instance().remove(&DataKey::PendingWeights);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingWeightsEffectiveLedger);
         env.events().publish(
             (symbol_short!("WtApply"),),
             (
@@ -1102,6 +1111,113 @@ mod tests {
         assert_eq!(w.vc_weight, 50);
         assert_eq!(w.tx_weight, 25);
         assert_eq!(w.repayment_weight, 25);
+    }
+
+    #[test]
+    fn test_update_weights_bypasses_timelock() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, CreditOracle);
+        let client = CreditOracleClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        // No propose_weights / apply_weights round trip — update_weights
+        // should take effect on the very same call, with no timelock wait.
+        client.update_weights(&ScoringWeights {
+            vc_weight: 20,
+            tx_weight: 50,
+            repayment_weight: 30,
+        });
+
+        let w = client.get_scoring_weights();
+        assert_eq!(w.vc_weight, 20);
+        assert_eq!(w.tx_weight, 50);
+        assert_eq!(w.repayment_weight, 30);
+    }
+
+    #[test]
+    fn test_update_weights_rejects_invalid_sum() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, CreditOracle);
+        let client = CreditOracleClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let result = client.try_update_weights(&ScoringWeights {
+            vc_weight: 40,
+            tx_weight: 40,
+            repayment_weight: 40, // sums to 120
+        });
+        assert_eq!(result, Err(Ok(CreditOracleError::InvalidWeights)));
+
+        // Confirm the rejected call left the stored config untouched.
+        let w = client.get_scoring_weights();
+        assert_eq!(w.vc_weight, 40);
+        assert_eq!(w.tx_weight, 30);
+        assert_eq!(w.repayment_weight, 30);
+    }
+
+    #[test]
+    fn test_update_weights_requires_admin_auth() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, CreditOracle);
+        let client = CreditOracleClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        // Withdraw the blanket auth mock so require_admin's require_auth()
+        // call inside update_weights has nothing authorizing the invocation.
+        env.mock_auths(&[]);
+        let result = client.try_update_weights(&ScoringWeights {
+            vc_weight: 20,
+            tx_weight: 50,
+            repayment_weight: 30,
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_update_weights_clears_pending_proposal() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, CreditOracle);
+        let client = CreditOracleClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        // Queue a timelocked proposal.
+        client.propose_weights(
+            &admin,
+            &ScoringWeights {
+                vc_weight: 10,
+                tx_weight: 10,
+                repayment_weight: 80,
+            },
+        );
+        assert!(client.get_pending_weights().is_some());
+
+        // Admin bypasses the timelock with a direct update.
+        client.update_weights(&ScoringWeights {
+            vc_weight: 20,
+            tx_weight: 50,
+            repayment_weight: 30,
+        });
+
+        let w = client.get_scoring_weights();
+        assert_eq!(w.vc_weight, 20);
+        assert_eq!(w.tx_weight, 50);
+        assert_eq!(w.repayment_weight, 30);
+
+        // The fix clears the stale proposal, so there's nothing left for a
+        // later apply_weights() call to silently resurrect.
+        assert!(client.get_pending_weights().is_none());
     }
 
     #[test]
