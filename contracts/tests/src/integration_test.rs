@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use credit_oracle::{CreditOracle, CreditOracleClient, TxStats};
+    use credit_oracle::{CreditOracle, CreditOracleClient, ScoringWeights, TxStats};
+    use governance::{Governance, GovernanceClient, GovernanceError};
     use identity_oracle::{IdentityOracle, IdentityOracleClient};
     use revocation_registry::{RevocationRegistry, RevocationRegistryClient};
     use soroban_sdk::{
