@@ -47,6 +47,8 @@ pub enum IdentityOracleError {
     NoPendingAdmin = 5,
     /// A VC with the same hash has already been anchored for this subject.
     DuplicateVC = 6,
+    /// No matching VC record was found for the given hash/issuer.
+    VCNotFound = 7,
 }
 
 /// Storage key variants for the identity-oracle contract.
@@ -326,7 +328,7 @@ impl IdentityOracle {
         }
 
         if !found {
-            panic!("vc not found");
+            return Err(IdentityOracleError::VCNotFound);
         }
 
         env.storage().persistent().set(&key, &updated);
@@ -442,7 +444,7 @@ impl IdentityOracle {
         match pending {
             Some(p) => {
                 if p != new_admin {
-                    panic!("not authorized");
+                    return Err(IdentityOracleError::NotAuthorized);
                 }
             }
             None => return Err(IdentityOracleError::NoPendingAdmin),
@@ -457,10 +459,11 @@ impl IdentityOracle {
     /// Upgrade the contract WASM in-place, preserving address and all stored state.
     ///
     /// Auth: admin only — verified via `require_admin`.
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), IdentityOracleError> {
         require_admin(&env);
         env.storage().instance().extend_ttl(INSTANCE_BUMP_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
     }
 
     /// Return the `IssuersIndex` vector of currently registered trusted issuers.
@@ -773,7 +776,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "vc not found")]
     fn test_mark_vc_revoked_panics_for_unknown_hash() {
         let env = Env::default();
         env.mock_all_auths();
@@ -791,7 +793,8 @@ mod tests {
         client.anchor_vc(&issuer, &subject, &known_hash);
 
         let unknown_hash = BytesN::from_array(&env, &[2u8; 32]);
-        client.mark_vc_revoked(&issuer, &subject, &unknown_hash);
+        let res = client.try_mark_vc_revoked(&issuer, &subject, &unknown_hash);
+        assert_eq!(res, Err(Ok(IdentityOracleError::VCNotFound)));
     }
 
     #[test]
@@ -816,6 +819,27 @@ mod tests {
         client.mark_vc_revoked(&issuer, &subject, &vc_hash);
 
         assert!(!client.is_verified(&subject));
+    }
+
+    #[test]
+    fn test_upgrade_rejects_without_admin_auth() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, IdentityOracle);
+        let client = IdentityOracleClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        // Withdraw the blanket auth mock: with an empty auth list, admin's
+        // require_auth() inside require_admin() has nothing authorizing the
+        // invocation, so it fails before the call ever reaches
+        // deployer().update_current_contract_wasm() (which would separately
+        // fail on an unregistered hash regardless of auth — that's not what
+        // this test is checking).
+        env.mock_auths(&[]);
+        let res = client.try_upgrade(&BytesN::from_array(&env, &[0u8; 32]));
+        assert!(res.is_err());
     }
 
     #[test]
@@ -858,7 +882,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "not authorized")]
     fn test_non_pending_admin_cannot_accept() {
         let env = Env::default();
         env.mock_all_auths();
@@ -873,6 +896,7 @@ mod tests {
         client.propose_new_admin(&admin2);
 
         // non_admin tries to accept
-        let _ = client.accept_admin(&non_admin);
+        let res = client.try_accept_admin(&non_admin);
+        assert_eq!(res, Err(Ok(IdentityOracleError::NotAuthorized)));
     }
 }
