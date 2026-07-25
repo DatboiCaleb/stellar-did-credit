@@ -6,7 +6,7 @@
 //! and active-count queries used by the credit-oracle.
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
-    IntoVal, String, Vec,
+    IntoVal, String, Symbol, Vec,
 };
 
 // ---------------------------------------------------------------------------
@@ -89,6 +89,10 @@ pub enum DataKey {
     VCAnchors(Address),
     /// The ID of the revocation registry contract.
     RevocationRegistryId,
+    /// Issuer trust multiplier in basis points (100 = 1×). Defaults to 100 when unset.
+    IssuerTier(Address),
+    /// Credential type label for a subject's anchored VC hash.
+    VCCredentialType(Address, BytesN<32>),
 }
 
 /// An on-chain anchor record for a verifiable credential.
@@ -107,6 +111,34 @@ pub struct VCRecord {
 
 const INSTANCE_BUMP_THRESHOLD: u32 = 5000;
 const INSTANCE_BUMP_AMOUNT: u32 = 500_000;
+
+/// Default issuer trust multiplier: 100 basis points (1×).
+pub const DEFAULT_ISSUER_TIER_BPS: u32 = 100;
+/// Maximum allowed issuer trust multiplier.
+pub const MAX_ISSUER_TIER_BPS: u32 = 300;
+
+fn generic_credential_type(env: &Env) -> Symbol {
+    symbol_short!("generic")
+}
+
+fn get_stored_credential_type(env: &Env, subject: &Address, vc_hash: &BytesN<32>) -> Symbol {
+    env.storage()
+        .persistent()
+        .get(&DataKey::VCCredentialType(subject.clone(), vc_hash.clone()))
+        .unwrap_or(generic_credential_type(env))
+}
+
+fn store_credential_type(
+    env: &Env,
+    subject: &Address,
+    vc_hash: &BytesN<32>,
+    credential_type: Symbol,
+) {
+    env.storage().persistent().set(
+        &DataKey::VCCredentialType(subject.clone(), vc_hash.clone()),
+        &credential_type,
+    );
+}
 
 /// Returns true if `s` starts with `prefix` by comparing their leading bytes on the stack.
 /// `prefix` must be ≤ 32 bytes.
@@ -283,6 +315,23 @@ impl IdentityOracle {
         subject: Address,
         vc_hash: BytesN<32>,
     ) -> Result<(), IdentityOracleError> {
+        Self::anchor_vc_typed(
+            env,
+            issuer,
+            subject,
+            vc_hash,
+            generic_credential_type(&env),
+        )
+    }
+
+    /// Anchor a VC with an explicit credential type label (e.g. `kyc`, `employment`).
+    pub fn anchor_vc_typed(
+        env: Env,
+        issuer: Address,
+        subject: Address,
+        vc_hash: BytesN<32>,
+        credential_type: Symbol,
+    ) -> Result<(), IdentityOracleError> {
         issuer.require_auth();
         let is_trusted: bool = env
             .storage()
@@ -401,6 +450,65 @@ impl IdentityOracle {
             }
         }
         count
+    }
+
+    /// Returns active (non-revoked) VC anchor records for `subject`.
+    ///
+    /// Revocations from both on-chain flags and the linked revocation registry
+    /// are excluded. Use this for credit scoring and verification audits.
+    pub fn get_vc_details(env: Env, subject: Address) -> Vec<VCRecord> {
+        let key = DataKey::VCAnchors(subject);
+        let anchors: Vec<VCRecord> = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or(Vec::new(&env));
+
+        let mut active = Vec::new(&env);
+        for record in anchors.iter() {
+            if !is_record_revoked(&env, &record) {
+                active.push_back(record);
+            }
+        }
+        active
+    }
+
+    /// Returns the credential type label for an anchored VC, defaulting to `generic`.
+    pub fn get_vc_credential_type(env: Env, subject: Address, vc_hash: BytesN<32>) -> Symbol {
+        get_stored_credential_type(&env, &subject, &vc_hash)
+    }
+
+    /// Set an issuer's trust multiplier in basis points (100 = 1×, 200 = 2×).
+    ///
+    /// Auth: admin only — verified via `require_admin`.
+    pub fn set_issuer_tier(
+        env: Env,
+        admin: Address,
+        issuer: Address,
+        weight_bps: u32,
+    ) -> Result<(), IdentityOracleError> {
+        let stored = require_admin(&env);
+        if admin != stored {
+            return Err(IdentityOracleError::NotAuthorized);
+        }
+        if weight_bps == 0 || weight_bps > MAX_ISSUER_TIER_BPS {
+            panic!("invalid issuer tier");
+        }
+        env.storage().instance().extend_ttl(INSTANCE_BUMP_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .persistent()
+            .set(&DataKey::IssuerTier(issuer.clone()), &weight_bps);
+        env.events()
+            .publish((symbol_short!("IssTier"),), (issuer, weight_bps));
+        Ok(())
+    }
+
+    /// Returns the issuer trust multiplier in basis points (default 100).
+    pub fn get_issuer_tier(env: Env, issuer: Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::IssuerTier(issuer))
+            .unwrap_or(DEFAULT_ISSUER_TIER_BPS)
     }
 
     /// Backwards-compatible wrapper.
@@ -529,7 +637,7 @@ impl IdentityOracle {
 #[allow(deprecated)]
 mod tests {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env};
+    use soroban_sdk::{symbol_short, testutils::Address as _, Env};
 
     #[test]
     fn test_anchor_vc_by_trusted_issuer() {
