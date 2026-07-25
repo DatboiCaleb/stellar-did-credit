@@ -29,7 +29,14 @@ fn require_admin(env: &Env) -> Address {
         .expect("not initialized");
     admin.require_auth();
     admin
-}
+}// ── Persistent TTL constants ─────────────────────────────────────
+// Persistent entries are extended to ~30 days on every write.
+//
+// Threshold: if remaining TTL drops below this, extend.
+// Extend to: the new TTL value in ledger counts (≈5 s/ledger).
+//
+const PERS_TTL_THRESHOLD: u32 = 120_960;   // ~7 days
+const PERS_TTL_EXTEND: u32   = 518_400;    // ~30 days
 
 /// Error types for the identity-oracle contract.
 #[contracterror]
@@ -251,6 +258,9 @@ impl IdentityOracle {
         env.storage()
             .persistent()
             .set(&DataKey::DIDDocument(subject.clone()), &did_doc_cid);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey::DIDDocument(subject.clone()), PERS_TTL_THRESHOLD, PERS_TTL_EXTEND);
         env.events()
             .publish((symbol_short!("DIDAnch"),), (subject, did_doc_cid));
         Ok(())
@@ -296,6 +306,7 @@ impl IdentityOracle {
 
         anchors.push_back(record);
         env.storage().persistent().set(&key, &anchors);
+        env.storage().persistent().extend_ttl(&key, PERS_TTL_THRESHOLD, PERS_TTL_EXTEND);
 
         env.events()
             .publish((symbol_short!("VCAnch"),), (issuer, subject, vc_hash));
@@ -332,6 +343,7 @@ impl IdentityOracle {
         }
 
         env.storage().persistent().set(&key, &updated);
+        env.storage().persistent().extend_ttl(&key, PERS_TTL_THRESHOLD, PERS_TTL_EXTEND);
         Ok(())
     }
 
@@ -466,6 +478,17 @@ impl IdentityOracle {
         Ok(())
     }
 
+    /// Admin-only maintenance: extend instance storage TTL so critical
+    /// configuration (Admin, RevocationRegistryId) does not expire on
+    /// an idle contract.
+    ///
+    /// Auth: admin only — verified via `require_admin`.
+    pub fn maintain_storage(env: Env) -> Result<(), IdentityOracleError> {
+        require_admin(&env);
+        env.storage().instance().extend_ttl(INSTANCE_BUMP_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
     /// Returns the currently registered (non-deregistered) trusted issuers.
     ///
     /// `IssuersIndex` is append-only and may contain deregistered addresses,
@@ -493,6 +516,7 @@ impl IdentityOracle {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use soroban_sdk::{testutils::Address as _, Env};
@@ -947,5 +971,36 @@ mod tests {
         // non_admin tries to accept
         let res = client.try_accept_admin(&non_admin);
         assert_eq!(res, Err(Ok(IdentityOracleError::NotAuthorized)));
+    }
+
+    #[test]
+    fn test_maintain_storage_succeeds_for_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, IdentityOracle);
+        let client = IdentityOracleClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        // Admin can call maintain_storage without error
+        let res = client.try_maintain_storage();
+        assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_maintain_storage_fails_for_non_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, IdentityOracle);
+        let client = IdentityOracleClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        // Withdraw blanket auth so require_admin fails
+        env.mock_auths(&[]);
+        let res = client.try_maintain_storage();
+        assert!(res.is_err());
     }
 }
