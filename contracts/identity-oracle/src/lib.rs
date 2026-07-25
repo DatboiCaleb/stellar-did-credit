@@ -332,6 +332,11 @@ impl IdentityOracle {
         Ok(())
     }
 
+    /// Check whether a subject has already anchored a DID document.
+    pub fn has_anchored_did(env: Env, subject: Address) -> bool {
+        env.storage().persistent().has(&DataKey::DIDDocument(subject))
+    }
+
     /// Anchor a DID document on-chain by storing its IPFS CID.
     ///
     /// **Authentication:** The `subject` must provide a valid signature.

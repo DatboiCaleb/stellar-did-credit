@@ -575,6 +575,19 @@ pub fn compute_score_pure(
     (MIN_SCORE + composite.saturating_mul(550) / 100).clamp(MIN_SCORE, MAX_SCORE)
 }
 
+fn has_anchored_did(env: &Env, subject: &Address) -> bool {
+    if let Some(identity_id) = env.storage().instance().get(&DataKey::IdentityOracleId) {
+        let args: SorobanVec<Val> = SorobanVec::from_array(&env, [subject.clone().into_val(env)]);
+        env.invoke_contract(
+            &identity_id,
+            &Symbol::new(env, "has_anchored_did"),
+            args,
+        )
+    } else {
+        true
+    }
+}
+
 #[contractimpl]
 impl CreditOracle {
     /// Compute and store the credit score for `subject`.
@@ -592,6 +605,11 @@ impl CreditOracle {
     ///   immediately before reading it without needing the subject's signature.
     /// - **Feeder tooling.** The off-chain feeder that keeps `TxStats` and
     ///   `VcCount` current can also drive score refresh in the same transaction.
+    ///
+    /// When an identity-oracle is configured, this function requires the
+    /// subject to have already anchored a DID document before a score may be
+    /// computed. If no identity-oracle is configured, the legacy open-call
+    /// behavior remains unchanged.
     ///
     /// # Recompute cooldown
     ///
@@ -973,6 +991,7 @@ impl CreditOracle {
 #[allow(deprecated)]
 mod tests {
     use super::*;
+    use identity_oracle::{IdentityOracle, IdentityOracleClient};
     use proptest::prelude::*;
     use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
 
