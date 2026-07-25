@@ -63,6 +63,8 @@ pub enum IdentityOracleError {
     DuplicateVC = 6,
     /// No matching VC record was found for the given hash/issuer.
     VCNotFound = 7,
+    /// The contract is currently paused and cannot accept writes.
+    ContractPaused = 8,
 }
 
 /// Storage key variants for the identity-oracle contract.
@@ -70,6 +72,8 @@ pub enum IdentityOracleError {
 pub enum DataKey {
     /// The contract administrator address.
     Admin,
+    /// Whether the contract is currently paused for writes.
+    Paused,
     /// Pending contract admin address for two-step transfer.
     PendingAdmin,
     /// Append-only index of every address ever registered as a trusted
@@ -232,6 +236,24 @@ impl IdentityOracle {
         Ok(())
     }
 
+    /// Pause all writes on the contract.
+    pub fn pause(env: Env) -> Result<(), IdentityOracleError> {
+        require_admin(&env);
+        env.storage().instance().extend_ttl(INSTANCE_BUMP_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage().instance().set(&DataKey::Paused, &true);
+        env.events().publish((symbol_short!("Paused"),), ());
+        Ok(())
+    }
+
+    /// Resume the contract and allow writes again.
+    pub fn unpause(env: Env) -> Result<(), IdentityOracleError> {
+        require_admin(&env);
+        env.storage().instance().extend_ttl(INSTANCE_BUMP_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.events().publish((symbol_short!("Unpaused"),), ());
+        Ok(())
+    }
+
     /// Set the revocation registry contract ID used to check global revocations.
     ///
     /// When set, `is_verified`, `get_active_vc_count`, and `verify_vc` will
@@ -242,6 +264,7 @@ impl IdentityOracle {
         env: Env,
         registry_id: Address,
     ) -> Result<(), IdentityOracleError> {
+        ensure_not_paused(&env)?;
         require_admin(&env);
         env.storage()
             .instance()
@@ -324,6 +347,7 @@ impl IdentityOracle {
         subject: Address,
         did_doc_cid: String,
     ) -> Result<(), IdentityOracleError> {
+        ensure_not_paused(&env)?;
         subject.require_auth();
 
         let len = did_doc_cid.len();
@@ -376,6 +400,7 @@ impl IdentityOracle {
         vc_hash: BytesN<32>,
         credential_type: Symbol,
     ) -> Result<(), IdentityOracleError> {
+        ensure_not_paused(&env)?;
         issuer.require_auth();
         let is_trusted: bool = env
             .storage()
@@ -408,6 +433,8 @@ impl IdentityOracle {
         };
         let is_active = !is_record_revoked(&env, &record);
 
+        store_credential_type(&env, &subject, &vc_hash, credential_type);
+
         anchors.push_back(record);
         env.storage().persistent().set(&key, &anchors);
         env.storage()
@@ -439,6 +466,7 @@ impl IdentityOracle {
         subject: Address,
         vc_hash: BytesN<32>,
     ) -> Result<(), IdentityOracleError> {
+        ensure_not_paused(&env)?;
         issuer.require_auth();
         let key = DataKey::VCAnchors(subject.clone());
         let anchors: Vec<VCRecord> = env
@@ -554,6 +582,7 @@ impl IdentityOracle {
         issuer: Address,
         weight_bps: u32,
     ) -> Result<(), IdentityOracleError> {
+        ensure_not_paused(&env)?;
         let stored = require_admin(&env);
         if admin != stored {
             return Err(IdentityOracleError::NotAuthorized);
@@ -623,6 +652,7 @@ impl IdentityOracle {
     ///
     /// Auth: current admin only — verified via `require_admin`.
     pub fn propose_new_admin(env: Env, new_admin: Address) -> Result<(), IdentityOracleError> {
+        ensure_not_paused(&env)?;
         require_admin(&env);
         env.storage()
             .instance()
@@ -641,6 +671,7 @@ impl IdentityOracle {
     ///
     /// Auth: the proposed `new_admin` address must sign the transaction.
     pub fn accept_admin(env: Env, new_admin: Address) -> Result<(), IdentityOracleError> {
+        ensure_not_paused(&env)?;
         let pending: Option<Address> = env.storage().instance().get(&DataKey::PendingAdmin);
         match pending {
             Some(p) => {
@@ -663,6 +694,7 @@ impl IdentityOracle {
     ///
     /// Auth: admin only — verified via `require_admin`.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), IdentityOracleError> {
+        ensure_not_paused(&env)?;
         require_admin(&env);
         env.storage()
             .instance()
@@ -677,6 +709,7 @@ impl IdentityOracle {
     ///
     /// Auth: admin only — verified via `require_admin`.
     pub fn maintain_storage(env: Env) -> Result<(), IdentityOracleError> {
+        ensure_not_paused(&env)?;
         require_admin(&env);
         env.storage()
             .instance()
