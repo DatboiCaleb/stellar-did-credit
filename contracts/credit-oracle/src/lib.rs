@@ -80,6 +80,8 @@ pub enum CreditOracleError {
     NoPendingAdmin = 6,
     /// Score was computed too recently for this subject.
     ComputeCooldownActive = 7,
+    /// Subject has not anchored a DID in the configured identity oracle.
+    IdentityNotAnchored = 8,
 }
 
 /// Storage keys for the credit oracle contract
@@ -452,6 +454,19 @@ pub fn compute_score_pure(
     (MIN_SCORE + composite.saturating_mul(550) / 100).clamp(MIN_SCORE, MAX_SCORE)
 }
 
+fn has_anchored_did(env: &Env, subject: &Address) -> bool {
+    if let Some(identity_id) = env.storage().instance().get(&DataKey::IdentityOracleId) {
+        let args: SorobanVec<Val> = SorobanVec::from_array(&env, [subject.clone().into_val(env)]);
+        env.invoke_contract(
+            &identity_id,
+            &Symbol::new(env, "has_anchored_did"),
+            args,
+        )
+    } else {
+        true
+    }
+}
+
 #[contractimpl]
 impl CreditOracle {
     /// Compute and store the credit score for `subject`.
@@ -470,12 +485,21 @@ impl CreditOracle {
     /// - **Feeder tooling.** The off-chain feeder that keeps `TxStats` and
     ///   `VcCount` current can also drive score refresh in the same transaction.
     ///
+    /// When an identity-oracle is configured, this function requires the
+    /// subject to have already anchored a DID document before a score may be
+    /// computed. If no identity-oracle is configured, the legacy open-call
+    /// behavior remains unchanged.
+    ///
     /// # Recompute cooldown
     ///
     /// Calls are rate-limited per subject by `ComputeCooldownLedgers`. The
     /// default is one ledger, preventing repeated same-ledger refreshes from
     /// gaming the persisted `last_updated` timestamp.
     pub fn compute_score(env: Env, subject: Address) -> Result<u32, CreditOracleError> {
+        if !has_anchored_did(&env, &subject) {
+            return Err(CreditOracleError::IdentityNotAnchored);
+        }
+
         let current_ledger = env.ledger().sequence();
         let cooldown: u32 = env
             .storage()
@@ -790,8 +814,12 @@ impl CreditOracle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use identity_oracle::{IdentityOracle, IdentityOracleClient};
     use proptest::prelude::*;
-    use soroban_sdk::testutils::{Address as _, Ledger as _};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger as _},
+        String,
+    };
 
     #[test]
     fn test_default_weights_sum_to_100() {
@@ -906,6 +934,30 @@ mod tests {
 
         let score = client.compute_score(&subject);
         assert_eq!(score, MIN_SCORE);
+    }
+
+    #[test]
+    fn test_compute_score_requires_anchored_did_when_identity_oracle_configured() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, CreditOracle);
+        let client = CreditOracleClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let subject = Address::generate(&env);
+        client.initialize(&admin);
+
+        let identity_contract_id = env.register_contract(None, IdentityOracle);
+        let identity_client = IdentityOracleClient::new(&env, &identity_contract_id);
+        identity_client.initialize(&admin);
+        client.set_identity_oracle(&identity_contract_id);
+
+        let result = client.try_compute_score(&subject);
+        assert_eq!(result, Err(Ok(CreditOracleError::IdentityNotAnchored)));
+
+        let cid = String::from_str(&env, "ipfs://QmAnchoredDIDTest");
+        identity_client.anchor_did(&subject, &cid);
+        assert_eq!(client.compute_score(&subject), MIN_SCORE);
     }
 
     #[test]
