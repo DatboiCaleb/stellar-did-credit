@@ -353,7 +353,12 @@ impl CreditOracle {
         Ok(())
     }
 
-    /// Record a repayment event for a user
+    /// Record a repayment event for a user.
+    ///
+    /// Note: this function does not verify that the lender actually disbursed a
+    /// loan to the subject. In the current v1 design it only requires the
+    /// caller to be a registered lender, so it should be treated as an
+    /// attestation of repayment rather than proof of a loan relationship.
     pub fn record_repayment(
         env: Env,
         lender: Address,
