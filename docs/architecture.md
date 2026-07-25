@@ -85,7 +85,7 @@ Computes and stores a credit score (300–850) for any subject address. It relie
 | `register_lender(admin, lender)`                     | admin    | Whitelists a lender                                |
 | `set_vc_count(feeder, subject, count)`               | feeder   | Caches the subject's VC count from identity-oracle |
 | `update_tx_stats(feeder, subject, stats)`            | feeder   | Updates 30-day transaction volume and count        |
-| `record_repayment(lender, subject, amount, on_time)` | lender   | Records a repayment event                          |
+| `record_repayment(lender, subject, amount, on_time)` | lender   | Records a repayment event; current v1 behavior does not verify a real loan relationship and should be treated as a lender attestation rather than proof of disbursement |
 | `compute_score(subject)`                             | anyone   | Runs the scoring formula and persists the result   |
 | `get_score(subject)`                                 | anyone   | Returns the last computed ScoreRecord              |
 | `update_weights(weights)`                            | admin    | Changes scoring weights (must sum to 100)          |
@@ -291,6 +291,8 @@ An off-chain indexer (the feeder) monitors the subject's on-chain activity, quer
 ### 4. Lender records repayments
 
 When a lender disburses a loan and the subject repays, the lender calls `record_repayment` on credit-oracle, flagging each repayment as on-time or late.
+
+This is a deliberate v1 limitation: the contract currently accepts repayment data from any registered lender without verifying that the lender actually disbursed a loan to that subject. In other words, `record_repayment` is an attestation from a trusted lender, not proof of an existing loan relationship. A future version should add explicit loan-tracking state or signed disbursement/repayment attestations to close this gap.
 
 ### 5. Score is computed
 
